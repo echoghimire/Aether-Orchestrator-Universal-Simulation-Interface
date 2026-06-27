@@ -22,9 +22,9 @@ The integrated solver calculates structural integrity based on the following:
 3. **Safety Factor:** Derived against 316L Stainless Steel yield strength ($~290$ MPa).
 
 ## 📦 Running the Application
-1. Download the standalone binary from the `/build` folder.
+1. Download the standalone binary from the Repo.
 2. Ensure **Python 3.x** is installed on your local machine.
-3. Launch `Ai Dashboard.exe`.
+3. Launch `Aether Orchestator.exe`.
 4. The app will automatically sync with `simulation.chakaap.com` and fetch the latest solver from R2.
 5. Adjust **Bz (Tesla)** and **Mesh Density**, then click **Execute Local Solver**.
 6. Check `Documents/AetherSim/results` for the generated `structural_report.json`.
