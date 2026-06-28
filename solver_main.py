@@ -4,96 +4,126 @@ import json
 import time
 import random
 import os
+import math
 
-def generate_engineering_results(bz, density, steps, results_dir):
-    """
-    Creates physical output files simulating HDF5/JSON engineering data.
-    """
-    os.makedirs(results_dir, exist_ok=True)
-    
-    # Simulate a summary of the structural analysis
-    summary = {
-        "metadata": {
-            "solver": "Aether WarpX Wrapper v1.0.0",
-            "timestamp": time.ctime(),
-            "target_vessel": "Polaris_V1"
-        },
-        "inputs": {
-            "magnetic_field_tesla": bz,
-            "plasma_density": density,
-            "iterations": steps
-        },
-        "outputs": {
-            "peak_vessel_load_gpa": round((bz * 0.18) + (random.random() * 0.2), 4),
-            "max_thermal_flux_mw": round((bz * 12.5) + random.random(), 2),
-            "safety_factor": round(1.5 + random.random(), 2),
-            "convergence_status": "SUCCESS"
-        }
-    }
+# --- PHYSICAL & MATERIAL CONSTANTS ---
+MU_0 = 1.256637e-6          # Permeability of free space
+SPEED_OF_LIGHT = 2.99e8     # m/s (Limit for PIC solvers)
+STEEL_YIELD = 290e6         # 316L Yield Strength in Pascals
+M_PROTON = 1.67e-27         # Proton mass (kg)
 
-    file_path = os.path.join(results_dir, "simulation_summary.json")
-    with open(file_path, "w") as f:
-        json.dump(summary, f, indent=4)
-    
-    return file_path
+# Species Mass Mapping (Atomic Mass Units)
+SPECIES_MAP = {
+    "D-He3": 5.0,  # Deuterium (2) + Helium-3 (3)
+    "D-D": 4.0,    # Deuterium (2) + Deuterium (2)
+    "H-Beam": 1.0  # Hydrogen
+}
 
-def run_simulation(bz, density, nx, ny, nz, steps):
+def solve_numerical_constraints(nx, ny, nz, cfl):
     """
-    The main PIC (Particle-In-Cell) simulation loop.
-    Prints DATA_SIGNAL for the Wails/JS UI to intercept.
+    Simulates WarpX CFL stability. 
+    WarpX timestep (dt) is limited by the smallest cell size / c.
     """
-    print(f"[INIT] Aether Engine: Initializing Mesh {nx}x{ny}x{nz}...")
-    sys.stdout.flush()
-    time.sleep(1)
+    domain_size = 1.0  # 1 meter cube
+    dx = domain_size / nx
+    # Courant Limit: dt <= CFL * dx / c
+    dt_limit = (cfl * dx) / SPEED_OF_LIGHT
+    return dx, dt_limit
 
-    print(f"[INFO] Applied B-Field: {bz} Tesla. Species: {density}")
+def run_simulation(bz, density, nx, ny, nz, steps, species, amr):
+    print(f"[INIT] Aether Engine: Numerical Handshake for Species: {species}")
     sys.stdout.flush()
 
-    for step in range(1, steps + 1):
-        # Simulate computational delay (Mimicking WarpX GPU cycles)
-        time.sleep(0.15) 
+    # 1. Parse Inputs
+    try:
+        n_e = float(density)
+        mass_factor = SPECIES_MAP.get(species, 1.0)
+    except ValueError:
+        n_e = 1.5e20
+        mass_factor = 1.0
 
-        # Physics-based mock data
-        # Higher B-field results in higher energy and load
-        energy_conv = 0.998 - (random.random() * 0.005)
-        vessel_load = (bz * 0.2) + (random.random() * 0.3)
-        field_div = random.random() * 0.0002
+    # 2. Grid & Stability Logic
+    dx, dt = solve_numerical_constraints(nx, ny, nz, 0.95)
+    
+    # Simulate Computational Complexity: 
+    # Total complexity = cells * steps * (2^amr_levels)
+    complexity_factor = (nx * ny * nz * (2**amr)) / 1_000_000 # Normalized
+    
+    # 3. Mechanical Physics Logic (Lorentz Coupling)
+    mag_pressure_pa = (bz ** 2) / (2 * MU_0)
+    # Impact pressure scales with particle mass and density
+    kinetic_impact_pa = (n_e * mass_factor * 1.6e-19) * 1000 # Approximation
+    total_load_pa = mag_pressure_pa + kinetic_impact_pa
+    
+    # Structural Calculation (Hoop Stress on 20mm 316L Wall)
+    radius = 0.5
+    thickness = 0.02
+    hoop_stress = (total_load_pa * radius) / thickness
+    fos = STEEL_YIELD / hoop_stress
 
-        # DATA_SIGNAL is the protocol used to update the UI charts live
+    # 4. Simulation Loop
+    for step in range(1, int(steps) + 1):
+        # WORK SIMULATION: Sleep time scales with grid complexity
+        # Real WarpX would be much slower; we scale to keep the UI responsive
+        time.sleep(max(0.05, 0.01 * complexity_factor)) 
+
+        # Numerical Divergence Simulation
+        # If complexity is too high for the mesh, divergence "jitters"
+        convergence_noise = (random.random() * 0.01) * (1.0 / step)
+        field_div = (0.0001 * (nx/128)) + convergence_noise
+
         telemetry = {
             "step": step,
-            "energy": energy_conv,
+            "energy": 0.999 - (convergence_noise),
             "divergence": field_div,
-            "load": vessel_load,
+            "load": total_load_pa / 1e9, # GPa
+            "stress_mpa": hoop_stress / 1e6,
+            "safety_factor": round(fos, 2),
             "status": "RUNNING"
         }
         
+        # UI Bridge Signal
         print(f"DATA_SIGNAL:{json.dumps(telemetry)}")
-        sys.stdout.flush() # CRITICAL: Allows Go to see data immediately
+        sys.stdout.flush()
 
-    # Finalize by creating the physical output files
-    results_path = generate_engineering_results(bz, density, steps, "results")
-    print(f"[SUCCESS] Simulation Converged. Data written to: {results_path}")
+        # FAILURE CRITERIA: Numerical Instability
+        if field_div > 0.05:
+            print(f"[CRITICAL] Numerical Divergence detected at Step {step}. Grid too coarse.")
+            sys.stdout.flush()
+            break
+
+    # 5. GENERATE FINAL ENGINEERING REPORT
+    os.makedirs("results", exist_ok=True)
+    with open("results/structural_report.json", "w") as f:
+        json.dump({
+            "solver_metadata": {
+                "engine": "WarpX-Coupled-ME",
+                "grid_dx": dx,
+                "timestep_dt": dt
+            },
+            "mechanical_results": {
+                "peak_wall_pressure_gpa": total_load_pa / 1e9,
+                "vessel_hoop_stress_mpa": hoop_stress / 1e6,
+                "material_limit_mpa": STEEL_YIELD / 1e6,
+                "factor_of_safety": fos
+            },
+            "verdict": "NOMINAL" if fos > 1.2 else "STRUCTURAL_FAILURE_RISK"
+        }, f, indent=4)
+
+    print(f"[SUCCESS] Simulation Complete. FoS: {round(fos, 2)}")
     sys.stdout.flush()
 
 if __name__ == "__main__":
-    # 1. Setup CLI Arguments (Matches the Go exec.Command call)
-    parser = argparse.ArgumentParser(description="Aether Orchestrator: WarpX Simulation Wrapper")
-    
-    parser.add_argument("--bz", type=float, default=20.0, help="Magnetic Field in Tesla")
-    parser.add_argument("--density", type=str, default="1.5e20", help="Plasma Density")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--bz", type=float, default=20.0)
+    parser.add_argument("--density", type=str, default="1.5e20")
     parser.add_argument("--nx", type=int, default=128)
     parser.add_argument("--ny", type=int, default=128)
     parser.add_argument("--nz", type=int, default=256)
     parser.add_argument("--steps", type=int, default=100)
+    parser.add_argument("--species", type=str, default="D-He3")
+    parser.add_argument("--amr", type=int, default=2)
     
     args = parser.parse_args()
     
-    try:
-        run_simulation(args.bz, args.density, args.nx, args.ny, args.nz, args.steps)
-    except KeyboardInterrupt:
-        print("\n[HALT] Simulation terminated by user.")
-        sys.exit(0)
-    except Exception as e:
-        print(f"[FATAL] Solver Error: {str(e)}")
-        sys.exit(1)
+    run_simulation(args.bz, args.density, args.nx, args.ny, args.nz, args.steps, args.species, args.amr)
